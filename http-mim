@@ -1,0 +1,180 @@
+#!/usr/bin/perl
+
+use strict;
+use Data::Dumper;
+use IO::Socket;
+use IO::Select;
+use threads;
+use threads::shared;
+
+select(STDOUT); $|=1;
+my $logfile = undef;
+&main();
+
+sub main {
+	my $syn = "Syntax: $0 {listen-port} {remote-addr} {remote-port} [record-logfile]\n";
+	my $port = $ARGV[0] || die($syn);
+	my $conf = {
+		'remote-addr' => $ARGV[1] || die($syn),
+		'remote-port' => $ARGV[2] || die($syn),
+	};
+	if ($ARGV[3]) {
+		$logfile = $ARGV[3];
+		if (!open(OUT, ">>", $logfile)) {
+			&die("Cannot open logfile($logfile): $!\n");
+		}
+		close(OUT);
+	}
+	my $listen = IO::Socket::INET->new(
+		LocalPort  => $port,
+		Listen	 => 10,
+		Proto	  => 'tcp',
+		Reuse	  => 1
+	) || &abort("Could not open TCP server on port $port: $@\n");
+
+	&log("Inbound Server listening on port $port\n");
+
+	my $nonblock = 1;
+	while (my $connection = $listen->accept) {
+		ioctl($connection, 0x8004667e, \$nonblock);
+		$connection->autoflush(1);
+
+		my $remoteIp = inet_ntoa($connection->peeraddr);
+		&log("CONNECT FROM $remoteIp\n");
+
+		threads->create('http_proxy', $conf, $connection, $remoteIp);
+
+		$connection->close();
+	}
+	close $listen;
+}
+
+# add the entire session to the queue as a single object
+sub http_proxy {
+	my ($conf, $inbound,$remoteIp) = @_;
+
+	my $outbound = IO::Socket::INET->new(
+			Proto     => "tcp",
+			PeerAddr  => $conf->{'remote-addr'},
+			PeerPort  => $conf->{'remote-port'},
+		);
+
+	if (!$outbound) {
+		&log("cannot connect to outbound $conf->{'remote-addr'}:$conf->{'remote-port'}: $!");
+		threads->self()->detach();
+		return; # unnecessary
+	}
+
+	&log("Opened outbound to $conf->{'remote-addr'}:$conf->{'remote-port'}\n");
+	$outbound->autoflush(1);
+
+	while (&proxy_http_query($inbound, $outbound)) {
+		&log("Keepalive\n");
+	}
+	$outbound->shutdown(2);
+	close($outbound);
+	$inbound->shutdown(2);
+	close($inbound);
+	threads->self()->detach();
+}
+
+sub proxy_http_query {
+	my ($in, $out) = @_;
+
+	# send query
+    my $query = <$in>;
+	&record('query', $query);
+	print $out $query;
+	my $headers = {};
+    while (my $hdr = <$in>) {
+		&record('query', $hdr);
+		print $out $hdr;
+        chomp($hdr);chomp($hdr);
+        if ($hdr =~ /^\s*$/) {
+            last;
+        }
+        if ($hdr =~ /^([^:]+):\s*(.*)$/) {
+            $headers->{lc $1} = $2;
+        }
+    }
+	my $data = '';
+	if ($headers->{'content-length'}) {
+		# add a loop to read in chunks incase of large files
+        read($in, $data, int($headers->{'content-length'}));
+		&record('query', $data);
+		print $out $data;
+    }
+
+	# read response
+	$headers = {};
+	my $response = <$out>;
+	print $in $response;
+	&record('response', $response);
+    while (my $hdr = <$out>) {
+		&record('response', $hdr);
+		print $in $hdr;
+        chomp($hdr);chomp($hdr);
+        if ($hdr =~ /^\s*$/) {
+            last;
+        }
+        if ($hdr =~ /^([^:]+):\s*(.*)$/) {
+            $headers->{lc $1} = $2;
+        }
+    }
+
+	if ($headers->{'content-length'}) {
+		# add a loop to read in chunks incase of large files
+        read($out, $data, int($headers->{'content-length'}));
+		&record('response', $data);
+		print $in $data;
+		if ($headers->{'connection'} =~ 'close') {
+			return;
+		}
+	} elsif (!defined($headers->{'connection'}) || $headers->{'connection'} =~ 'close') {
+		while (<$out>) {
+			&record('response', $_);
+			print $in $_;
+		}
+		return undef;
+	}
+
+	return $headers;
+}
+
+sub log {
+	my $line = scalar localtime() . ' - ' . $_[0];
+	print threads->self()->tid() . ": ";
+	print $line;
+	$logfile && &record('info', $line);
+}
+
+sub abort {
+	print threads->self()->tid() . ": ";
+	die ;
+}
+
+sub record {
+	my ($type, $data) = @_;
+	my $out = *STDOUT;
+	if ($logfile) {
+		if (!open(OUT, ">>", $logfile)) {
+			&log("Cannot open logfile($logfile): $!\n");
+		} else {
+			$out = *OUT;
+		}
+	}
+	chomp($data); chomp($data);
+	print $out threads->self()->tid() . ": ";
+	if ($type eq 'info') {
+		print $out "??? ";
+	} elsif ($type eq 'query') {
+		print $out ">>> ";
+	} else {
+		print $out "<<< ";
+	}
+
+	print $out $data;
+	print $out "\n";
+	$logfile && close(OUT);
+}
+
