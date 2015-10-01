@@ -1,4 +1,9 @@
 #!/usr/bin/perl
+#
+# Copyright 2015 Brandon Gillespie
+# License for use by GNU AFFERO GENERAL PUBLIC LICENSE
+# See: LICENSE
+#
 
 use strict;
 use Data::Dumper;
@@ -78,6 +83,25 @@ sub http_proxy {
 	threads->self()->detach();
 }
 
+sub read_headers {
+	my ($type, $read, $write) = @_;
+
+	my $headers = {};
+	while (my $hdr = <$read>) {
+		&record($type, $hdr);
+		print $write $hdr;
+		chomp($hdr);
+		chomp($hdr);
+		if ($hdr =~ /^\s*$/) {
+			last;
+		}
+		if ($hdr =~ /^([^:]+):\s*(.*)$/) {
+			$headers->{lc $1} = $2;
+		}
+	}
+	return $headers;
+}
+
 sub proxy_http_query {
 	my ($in, $out) = @_;
 
@@ -85,52 +109,29 @@ sub proxy_http_query {
 	my $query = <$in>;
 	&record('query', $query);
 	print $out $query;
-	my $headers = {};
-	while (my $hdr = <$in>) {
-		&record('query', $hdr);
-		print $out $hdr;
-		chomp($hdr);chomp($hdr);
-		if ($hdr =~ /^\s*$/) {
-			last;
-		}
-		if ($hdr =~ /^([^:]+):\s*(.*)$/) {
-			$headers->{lc $1} = $2;
-		}
-	}
+	my $q_headers = &read_headers('query', $in, $out);
 	my $data = '';
-	if ($headers->{'content-length'}) {
+	if ($q_headers->{'content-length'}) {
 		# add a loop to read in chunks incase of large files
-		read($in, $data, int($headers->{'content-length'}));
+		read($in, $data, int($q_headers->{'content-length'}));
 		&record('query', $data);
 		print $out $data;
 	}
 
 	# read response
-	$headers = {};
 	my $response = <$out>;
 	print $in $response;
 	&record('response', $response);
-	while (my $hdr = <$out>) {
-		&record('response', $hdr);
-		print $in $hdr;
-		chomp($hdr);chomp($hdr);
-		if ($hdr =~ /^\s*$/) {
-			last;
-		}
-		if ($hdr =~ /^([^:]+):\s*(.*)$/) {
-			$headers->{lc $1} = $2;
-		}
-	}
-
-	if ($headers->{'content-length'}) {
+	my $r_headers = &read_headers('response', $out, $in);
+	if ($r_headers->{'content-length'}) {
 		# add a loop to read in chunks incase of large files
-		read($out, $data, int($headers->{'content-length'}));
+		read($out, $data, int($r_headers->{'content-length'}));
 		&record('response', $data);
 		print $in $data;
-		if ($headers->{'connection'} =~ 'close') {
+		if ($r_headers->{'connection'} =~ 'close') {
 			return;
 		}
-	} elsif (!defined($headers->{'connection'}) || $headers->{'connection'} =~ 'close') {
+	} elsif (!defined($r_headers->{'connection'}) || $r_headers->{'connection'} =~ 'close') {
 		while (<$out>) {
 			&record('response', $_);
 			print $in $_;
@@ -138,7 +139,7 @@ sub proxy_http_query {
 		return undef;
 	}
 
-	return $headers;
+	return $r_headers;
 }
 
 sub log {
