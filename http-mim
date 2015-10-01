@@ -54,7 +54,7 @@ sub http_proxy {
 	my ($conf, $inbound,$remoteIp) = @_;
 
 	my $outbound = IO::Socket::INET->new(
-			Proto     => "tcp",
+			Proto	 => "tcp",
 			PeerAddr  => $conf->{'remote-addr'},
 			PeerPort  => $conf->{'remote-port'},
 		);
@@ -82,49 +82,49 @@ sub proxy_http_query {
 	my ($in, $out) = @_;
 
 	# send query
-    my $query = <$in>;
+	my $query = <$in>;
 	&record('query', $query);
 	print $out $query;
 	my $headers = {};
-    while (my $hdr = <$in>) {
+	while (my $hdr = <$in>) {
 		&record('query', $hdr);
 		print $out $hdr;
-        chomp($hdr);chomp($hdr);
-        if ($hdr =~ /^\s*$/) {
-            last;
-        }
-        if ($hdr =~ /^([^:]+):\s*(.*)$/) {
-            $headers->{lc $1} = $2;
-        }
-    }
+		chomp($hdr);chomp($hdr);
+		if ($hdr =~ /^\s*$/) {
+			last;
+		}
+		if ($hdr =~ /^([^:]+):\s*(.*)$/) {
+			$headers->{lc $1} = $2;
+		}
+	}
 	my $data = '';
 	if ($headers->{'content-length'}) {
 		# add a loop to read in chunks incase of large files
-        read($in, $data, int($headers->{'content-length'}));
+		read($in, $data, int($headers->{'content-length'}));
 		&record('query', $data);
 		print $out $data;
-    }
+	}
 
 	# read response
 	$headers = {};
 	my $response = <$out>;
 	print $in $response;
 	&record('response', $response);
-    while (my $hdr = <$out>) {
+	while (my $hdr = <$out>) {
 		&record('response', $hdr);
 		print $in $hdr;
-        chomp($hdr);chomp($hdr);
-        if ($hdr =~ /^\s*$/) {
-            last;
-        }
-        if ($hdr =~ /^([^:]+):\s*(.*)$/) {
-            $headers->{lc $1} = $2;
-        }
-    }
+		chomp($hdr);chomp($hdr);
+		if ($hdr =~ /^\s*$/) {
+			last;
+		}
+		if ($hdr =~ /^([^:]+):\s*(.*)$/) {
+			$headers->{lc $1} = $2;
+		}
+	}
 
 	if ($headers->{'content-length'}) {
 		# add a loop to read in chunks incase of large files
-        read($out, $data, int($headers->{'content-length'}));
+		read($out, $data, int($headers->{'content-length'}));
 		&record('response', $data);
 		print $in $data;
 		if ($headers->{'connection'} =~ 'close') {
