@@ -54,7 +54,6 @@ sub main {
 	close $listen;
 }
 
-# add the entire session to the queue as a single object
 sub http_proxy {
 	my ($conf, $inbound,$remoteIp) = @_;
 
